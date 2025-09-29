@@ -1,0 +1,13 @@
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 1
+names: ['Traffic Cone']
+
+roboflow:
+  workspace: ada-xwf69
+  project: ada-wlb3p
+  version: 2
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/ada-xwf69/ada-wlb3p/dataset/2
