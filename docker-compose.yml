@@ -1,0 +1,20 @@
+services:
+  ada_perception:
+    image: williamhecoin/ada_academy:perception2025v1
+    container_name: ada_perception_container
+    restart: "no"
+    network_mode: host
+    ipc: host
+    privileged: true
+    # environment:
+    #   - DISPLAY=${DISPLAY}
+    volumes:
+      - /tmp/.X11-unix/:/tmp/.X11-unix
+      - /dev:/dev
+      - /lib/aarch64-linux-gnu/libffi.so.8.1.0:/lib/aarch64-linux-gnu/libffi.so.8.1.0:ro
+      - /lib/aarch64-linux-gnu/libffi.so.8:/lib/aarch64-linux-gnu/libffi.so.8:ro
+      - /dev/shm:/dev/shm
+      - ./src/perception:/perception_ws/src
+    tty: true
+    stdin_open: true
+
