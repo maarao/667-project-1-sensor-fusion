@@ -3,11 +3,13 @@ services:
     image: williamhecoin/ada_academy:perception2025v1
     container_name: ada_perception_container
     restart: "no"
+    runtime: nvidia
     network_mode: host
     ipc: host
     privileged: true
-    # environment:
-    #   - DISPLAY=${DISPLAY}
+    environment:
+      - DISPLAY=${DISPLAY}
+    shm_size: 6g
     volumes:
       - /tmp/.X11-unix/:/tmp/.X11-unix
       - /dev:/dev
@@ -17,4 +19,4 @@ services:
       - ./src/perception:/perception_ws/src
     tty: true
     stdin_open: true
-
+ 

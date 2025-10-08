@@ -61,74 +61,153 @@ class FusionNode(Node):
 
     def detection_callback(self, msg: String):
         text = msg.data.strip()
+        self.get_logger().info(f"[detection_callback] raw message: '{text}'")
+        print(f"[detection_callback] raw message: '{text}'")
         parsed = self.parse_detection_text(text)
+        self.get_logger().info(f"[detection_callback] parsed {len(parsed)} detections")
+        print(f"[detection_callback] parsed: {parsed}")
         if parsed:
             self.latest_detections = parsed
         else:
             self.latest_detections = []
-
+    
     def image_callback(self, msg: Image):
         # Only need width to map bbox center to angle
         self.latest_image_width = msg.width
-
+        self.get_logger().info(f"[image_callback] image width set to {self.latest_image_width}")
+        print(f"[image_callback] image width: {self.latest_image_width}")
+    
     def gnss_callback(self, msg: NavSatFix):
         self.latest_gnss = msg
-
+        st = getattr(msg, "status", None)
+        status_val = st.status if st is not None else None
+        self.get_logger().info(f"[gnss_callback] GNSS received status={status_val}, lat={msg.latitude:.7f}, lon={msg.longitude:.7f}, alt={getattr(msg,'altitude',0.0):.2f}")
+        print(f"[gnss_callback] GNSS status={status_val}, lat={msg.latitude}, lon={msg.longitude}, alt={getattr(msg,'altitude',0.0)}")
+    
     def pointcloud_callback(self, msg: PointCloud2):
         # store latest pointcloud message
         self.latest_pc = msg
-
+        # log some header info to help debug
+        try:
+            frame = msg.header.frame_id
+            width = getattr(msg, "width", None)
+            height = getattr(msg, "height", None)
+            point_step = getattr(msg, "point_step", None)
+            row_step = getattr(msg, "row_step", None)
+            self.get_logger().info(f"[pointcloud_callback] frame={frame}, width={width}, height={height}, point_step={point_step}, row_step={row_step}")
+            print(f"[pointcloud_callback] frame={frame}, width={width}, height={height}, point_step={point_step}, row_step={row_step}")
+        except Exception as e:
+            self.get_logger().info(f"[pointcloud_callback] header read error: {e}")
+            print(f"[pointcloud_callback] header read error: {e}")
+    
     def timer_callback(self):
-        if not self.latest_detections or self.latest_pc is None or self.latest_image_width is None:
+        self.get_logger().info("[timer_callback] triggered")
+        print("[timer_callback] triggered")
+        self.get_logger().info(f"[timer_callback] latest_detections_count={len(self.latest_detections)}, latest_pc_set={self.latest_pc is not None}, latest_image_width={self.latest_image_width}")
+        print(f"[timer_callback] detections={self.latest_detections}")
+    
+        if not self.latest_detections:
+            self.get_logger().info("[timer_callback] no detections to process")
+            print("[timer_callback] no detections to process")
             return
+        if self.latest_pc is None:
+            self.get_logger().info("[timer_callback] no pointcloud available")
+            print("[timer_callback] no pointcloud available")
+            return
+        if self.latest_image_width is None:
+            self.get_logger().info("[timer_callback] no image width available")
+            print("[timer_callback] no image width available")
+            return
+    
         # Convert pointcloud to numpy array of points
         points = []
-        for p in pc2.read_points(self.latest_pc, field_names=('x','y','z'), skip_nans=True):
-            points.append(p)
+        try:
+            for p in pc2.read_points(self.latest_pc, field_names=('x','y','z'), skip_nans=True):
+                points.append(p)
+        except Exception as e:
+            self.get_logger().info(f"[timer_callback] error reading points: {e}")
+            print(f"[timer_callback] error reading points: {e}")
+            return
+    
         if not points:
+            self.get_logger().info("[timer_callback] pointcloud contained no points after read_points")
+            print("[timer_callback] pointcloud empty")
             return
         pts = np.array(points)  # Nx3
+        self.get_logger().info(f"[timer_callback] pointcloud loaded, pts.shape={pts.shape}")
+        print(f"[timer_callback] pts.shape={pts.shape}")
+    
         # apply lidar offset (pointcloud reported in lidar frame -> transform to ego frame)
-        pts = pts + self.lidar_offset.reshape((1,3))
-
+        try:
+            pts = pts + self.lidar_offset.reshape((1,3))
+        except Exception as e:
+            self.get_logger().info(f"[timer_callback] error applying lidar offset: {e}")
+            print(f"[timer_callback] error applying lidar offset: {e}")
+            return
+    
         results = []
-        for det in self.latest_detections:
-            cls = det['class']
-            x1,y1,x2,y2 = det['bbox']
-            conf = det['conf']
+        for idx_det, det in enumerate(self.latest_detections):
+            try:
+                cls = det['class']
+                x1,y1,x2,y2 = det['bbox']
+                conf = det['conf']
+            except Exception as e:
+                self.get_logger().info(f"[timer_callback] invalid detection format at index {idx_det}: {e}")
+                print(f"[timer_callback] invalid detection format at index {idx_det}: {e}")
+                continue
+    
             cx = (x1 + x2)/2.0
             w = (x2 - x1)
             img_w = self.latest_image_width
+            if img_w == 0:
+                self.get_logger().info("[timer_callback] image width is zero, skipping detection")
+                print("[timer_callback] image width is zero")
+                continue
+    
             # map pixel center to horizontal angle
             rel = (cx - img_w/2.0)/img_w  # -0.5..0.5
             angle_center = rel * self.hfov_rad
             # width based angular tolerance
             angle_tol = max(abs(w)/img_w * self.hfov_rad * 0.5, self.match_angle_padding)
-
+    
+            self.get_logger().info(f"[timer_callback] det#{idx_det} class={cls} bbox=({x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f}) conf={conf:.2f} cx={cx:.1f} angle_center={math.degrees(angle_center):.2f}deg angle_tol={math.degrees(angle_tol):.2f}deg")
+            print(f"[timer_callback] det#{idx_det} class={cls} cx={cx} angle_center(deg)={math.degrees(angle_center):.2f} angle_tol(deg)={math.degrees(angle_tol):.2f}")
+    
             # compute azimuth for each point (atan2(y,x))
             az = np.arctan2(pts[:,1], pts[:,0])
             # select points roughly in front (x>0)
             mask_front = pts[:,0] > 0.2
             mask_angle = np.abs(self.angle_diff(az, angle_center)) < angle_tol
             mask = mask_front & mask_angle
+            self.get_logger().info(f"[timer_callback] det#{idx_det} mask_front_count={np.count_nonzero(mask_front)} mask_angle_count={np.count_nonzero(mask_angle)} mask_count={np.count_nonzero(mask)}")
+            print(f"[timer_callback] mask_front_count={np.count_nonzero(mask_front)} mask_angle_count={np.count_nonzero(mask_angle)} mask_count={np.count_nonzero(mask)}")
+    
             if not np.any(mask):
                 # fallback: take nearest point in front
                 front_pts = pts[mask_front]
                 if front_pts.size == 0:
+                    self.get_logger().info(f"[timer_callback] det#{idx_det} no front points available, skipping")
+                    print(f"[timer_callback] det#{idx_det} no front points available")
                     continue
                 # choose point with smallest x (closest)
                 idx = np.argmin(front_pts[:,0])
                 centroid = front_pts[idx]
+                self.get_logger().info(f"[timer_callback] det#{idx_det} fallback centroid chosen from front_pts idx={idx} centroid={centroid}")
+                print(f"[timer_callback] det#{idx_det} fallback centroid={centroid}")
             else:
                 selected = pts[mask]
                 centroid = np.mean(selected, axis=0)
-
+                self.get_logger().info(f"[timer_callback] det#{idx_det} selected {selected.shape[0]} pts centroid={centroid}")
+                print(f"[timer_callback] det#{idx_det} centroid={centroid}")
+    
             # compute local coordinates (x forward, y left)
             local_x, local_y, local_z = float(centroid[0]), float(centroid[1]), float(centroid[2])
-
+            self.get_logger().info(f"[timer_callback] det#{idx_det} local coords x={local_x:.2f}, y={local_y:.2f}, z={local_z:.2f}")
+            print(f"[timer_callback] det#{idx_det} local x={local_x}, y={local_y}, z={local_z}")
+    
             # compute global lat/lon if GNSS available
             lat, lon, alt = None, None, None
-            if self.latest_gnss is not None and self.latest_gnss.status.status >= 0:
+            if self.latest_gnss is not None and getattr(self.latest_gnss, "status", None) is not None and self.latest_gnss.status.status >= 0:
                 lat0 = self.latest_gnss.latitude
                 lon0 = self.latest_gnss.longitude
                 alt0 = self.latest_gnss.altitude if hasattr(self.latest_gnss, 'altitude') else 0.0
@@ -139,14 +218,19 @@ class FusionNode(Node):
                 lat = lat0 + (north / R) * (180.0 / math.pi)
                 lon = lon0 + (east / (R * math.cos(math.radians(lat0)))) * (180.0 / math.pi)
                 alt = alt0 + local_z
-
+                self.get_logger().info(f"[timer_callback] det#{idx_det} global approx lat={lat:.7f}, lon={lon:.7f}, alt={alt:.2f}")
+                print(f"[timer_callback] det#{idx_det} global lat={lat}, lon={lon}, alt={alt}")
+            else:
+                self.get_logger().info(f"[timer_callback] det#{idx_det} no valid GNSS to compute global coords")
+                print(f"[timer_callback] det#{idx_det} no GNSS")
+    
             results.append({
                 'class': cls,
                 'local': {'x': local_x, 'y': local_y, 'z': local_z},
                 'global': {'lat': lat, 'lon': lon, 'alt': alt},
                 'conf': conf
             })
-
+    
         # publish results as formatted string
         lines = []
         for r in results:
@@ -155,9 +239,11 @@ class FusionNode(Node):
                 lines.append(f"{r['class']}: local(x={r['local']['x']:.2f}, y={r['local']['y']:.2f}, z={r['local']['z']:.2f}), global(lat={g['lat']:.7f}, lon={g['lon']:.7f}, alt={g['alt']:.2f}), conf={r['conf']:.2f}")
             else:
                 lines.append(f"{r['class']}: local(x={r['local']['x']:.2f}, y={r['local']['y']:.2f}, z={r['local']['z']:.2f}), global(none), conf={r['conf']:.2f}")
-
+    
         if lines:
             msg = "; ".join(lines)
+            self.get_logger().info(f"[timer_callback] publishing {len(lines)} fused results")
+            print(f"[timer_callback] publishing message: {msg}")
             self.pub.publish(String(data=msg))
 
     @staticmethod
