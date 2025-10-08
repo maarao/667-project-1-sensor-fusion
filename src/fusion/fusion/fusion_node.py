@@ -169,25 +169,54 @@ class FusionNode(Node):
     def parse_detection_text(self, text):
         """
         Parse detection text messages emitted by PerceptionNode.
-        Expected format like:
-        "Car [x1, y1, x2, y2] (0.98); Person [..] (0.76)"
+
+        PerceptionNode currently emits detections in a compact CSV-like format:
+          "ClassName,x1,y1,x2,y2,conf; ClassName2,x1,y1,x2,y2,conf"
+
+        Older/alternative format (kept for compatibility) is:
+          "Class [x1, y1, x2, y2] (conf); ..."
+
+        This parser supports both formats and returns a list of dicts:
+          {'class': <str>, 'bbox': (x1,y1,x2,y2), 'conf': <float>}
         """
         if not text or text.strip().lower() == 'no detections':
             return []
+
         parts = [p.strip() for p in text.split(';') if p.strip()]
         detections = []
-        pattern = re.compile(r'(?P<class>\w[\w ]*\w)\s*\[\s*(?P<x1>[-+]?\d*\.?\d+)\s*,\s*(?P<y1>[-+]?\d*\.?\d+)\s*,\s*(?P<x2>[-+]?\d*\.?\d+)\s*,\s*(?P<y2>[-+]?\d*\.?\d+)\s*\]\s*\(\s*(?P<conf>[-+]?\d*\.?\d+)\s*\)')
+
+        # First, try to parse the compact CSV-like entries produced by PerceptionNode
         for p in parts:
-            m = pattern.search(p)
-            if not m:
-                continue
-            cls = m.group('class').strip()
-            x1 = float(m.group('x1'))
-            y1 = float(m.group('y1'))
-            x2 = float(m.group('x2'))
-            y2 = float(m.group('y2'))
-            conf = float(m.group('conf'))
-            detections.append({'class': cls, 'bbox': (x1,y1,x2,y2), 'conf': conf})
+            # split by commas - the expected CSV format has at least 6 fields
+            csv_fields = [f.strip() for f in p.split(',')]
+            if len(csv_fields) >= 6:
+                try:
+                    cls = csv_fields[0]
+                    x1 = float(csv_fields[1])
+                    y1 = float(csv_fields[2])
+                    x2 = float(csv_fields[3])
+                    y2 = float(csv_fields[4])
+                    conf = float(csv_fields[5])
+                    detections.append({'class': cls, 'bbox': (x1, y1, x2, y2), 'conf': conf})
+                    continue
+                except ValueError:
+                    # fall through to regex parser if conversion fails
+                    pass
+
+            # Fallback: try the bracketed pattern "Class [x1, y1, x2, y2] (conf)"
+            m = re.search(r'(?P<class>[\w ][\w ]*?)\s*\[\s*(?P<x1>[-+]?\d*\.?\d+)\s*,\s*(?P<y1>[-+]?\d*\.?\d+)\s*,\s*(?P<x2>[-+]?\d*\.?\d+)\s*,\s*(?P<y2>[-+]?\d*\.?\d+)\s*\]\s*\(?\s*(?P<conf>[-+]?\d*\.?\d+)\s*\)?', p)
+            if m:
+                try:
+                    cls = m.group('class').strip()
+                    x1 = float(m.group('x1'))
+                    y1 = float(m.group('y1'))
+                    x2 = float(m.group('x2'))
+                    y2 = float(m.group('y2'))
+                    conf = float(m.group('conf'))
+                    detections.append({'class': cls, 'bbox': (x1, y1, x2, y2), 'conf': conf})
+                except ValueError:
+                    continue
+
         return detections
 
 
