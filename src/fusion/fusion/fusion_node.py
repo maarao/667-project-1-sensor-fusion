@@ -60,16 +60,28 @@ class FusionNode(Node):
         self.get_logger().info(f'Fusion node started. Listening to {detection_topic} and {pointcloud_topic}')
 
     def detection_callback(self, msg: String):
-        text = msg.data.strip()
+        # Robustly extract text from incoming String messages. Accept a few common
+        # accidental prefixes (e.g. "data: ...") or surrounding quotes that may
+        # appear if the topic output has been forwarded into another pipeline.
+        raw = msg.data if msg is not None else ''
+        text = str(raw).strip()
+
+        # remove common "data:" prefix if someone pasted the topic echo output
+        if text.lower().startswith('data:'):
+            text = text.split(':', 1)[1].strip()
+
+        # strip surrounding quotes if present
+        if (text.startswith("'") and text.endswith("'")) or (text.startswith('"') and text.endswith('"')):
+            text = text[1:-1].strip()
+
         self.get_logger().info(f"[detection_callback] raw message: '{text}'")
         print(f"[detection_callback] raw message: '{text}'")
         parsed = self.parse_detection_text(text)
-        self.get_logger().info(f"[detection_callback] parsed {len(parsed)} detections")
+        self.get_logger().info(f"[detection_callback] parsed {len(parsed)} detections: {parsed}")
         print(f"[detection_callback] parsed: {parsed}")
-        if parsed:
-            self.latest_detections = parsed
-        else:
-            self.latest_detections = []
+
+        # Always update latest_detections with the parsed result (may be empty).
+        self.latest_detections = parsed
     
     def image_callback(self, msg: Image):
         # Only need width to map bbox center to angle
@@ -158,11 +170,21 @@ class FusionNode(Node):
     
             cx = (x1 + x2)/2.0
             w = (x2 - x1)
+
+            # Prefer the width from the latest annotated image. If not available,
+            # try to estimate it from detection bboxes (useful when annotated
+            # image messages are not always published).
             img_w = self.latest_image_width
-            if img_w == 0:
-                self.get_logger().info("[timer_callback] image width is zero, skipping detection")
-                print("[timer_callback] image width is zero")
-                continue
+            if not img_w or img_w == 0:
+                max_x2 = max((d['bbox'][2] for d in self.latest_detections), default=0)
+                if max_x2 > 0:
+                    img_w = max_x2 + 1.0
+                    self.get_logger().info(f"[timer_callback] estimated image width from detections: {img_w}")
+                    print(f"[timer_callback] estimated image width: {img_w}")
+                else:
+                    self.get_logger().info("[timer_callback] no image width available and cannot estimate, skipping detection")
+                    print("[timer_callback] no image width available")
+                    continue
     
             # map pixel center to horizontal angle
             rel = (cx - img_w/2.0)/img_w  # -0.5..0.5
