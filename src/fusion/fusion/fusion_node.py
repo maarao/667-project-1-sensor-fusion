@@ -145,7 +145,17 @@ class FusionNode(Node):
             self.get_logger().info("[timer_callback] pointcloud contained no points after read_points")
             print("[timer_callback] pointcloud empty")
             return
-        pts = np.array(points)  # Nx3
+        # Create a plain Nx3 float array regardless of how read_points yields data.
+        pts = np.array(points)
+        # If pts has named fields (structured dtype like ('x','y','z')), convert to Nx3 float.
+        if getattr(pts.dtype, 'names', None):
+            try:
+                pts = np.vstack((pts['x'], pts['y'], pts['z'])).T.astype(np.float64)
+            except Exception:
+                # Fallback: build from tuples/records
+                pts = np.asarray([tuple(r) for r in pts], dtype=np.float64)
+        else:
+            pts = pts.astype(np.float64)
         self.get_logger().info(f"[timer_callback] pointcloud loaded, pts.shape={pts.shape}")
         print(f"[timer_callback] pts.shape={pts.shape}")
     
